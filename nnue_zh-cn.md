@@ -761,13 +761,12 @@ loss = lambda_ * loss_eval + (1 - lambda_) * loss_result
 在插值之前应用：
 
 ```python
-scaling = ... # depends on the engine and data. Determines the shape of
-              # the sigmoid that transforms the evaluation to WDL space
-              # Stockfish uses values around 400
-wdl_eval_model = sigmoid(model(...) / scaling)
-wdl_eval_target = sigmoid(target / scaling)
-wdl_value_target = lambda_ * wdl_eval_target + (1 - lambda_) * game_result
-loss = (wdl_eval_model - wdl_value_target)**2
+scaling = ... # 取决于引擎和数据。决定将评估转换为WDL空间的sigmoid函数的形状
+              # Stockfish使用大约400的值
+wdl_eval_model = sigmoid(model(...) / scaling)  # WDL评估模型
+wdl_eval_target = sigmoid(target / scaling)  # WDL目标评估
+wdl_value_target = lambda_ * wdl_eval_target + (1 - lambda_) * game_result  # WDL值目标
+loss = (wdl_eval_model - wdl_value_target)**2  # 损失函数
 ```
 
 在插值之后应用：
@@ -803,9 +802,9 @@ loss = lambda_ * loss_eval + (1 - lambda_) * loss_result
 ```python
 epsilon = 1e-12  # 用于防止对数运算中的0
 scaling = ...
-wdl_eval_model = sigmoid(model(...) / scaling)
-wdl_eval_target = sigmoid(target / scaling)
-wdl_value_target = lambda_ * wdl_eval_target + (1 - lambda_) * game_result
+wdl_eval_model = sigmoid(model(...) / scaling)  # WDL评估模型
+wdl_eval_target = sigmoid(target / scaling)  # WDL目标评估
+wdl_value_target = lambda_ * wdl_eval_target + (1 - lambda_) * game_result  # WDL值目标
 
 # 损失中的第一项梯度为0，因为我们总是相对于`wdl_eval_model`进行微分，
 # 但它使得损失在0处有最小值。
@@ -913,13 +912,13 @@ SIMD 对特征转换器的好处有两个：
 我们的累加结构没有太大变化，我们只是将float改为int16：
 
 ```cpp
-// We now also make sure that the accumulator structure is aligned to the cache line.
-// This is not strictly required by AVX2 instructions but may improve performance.
+// 现在我们还确保累加器结构与缓存行对齐。
+// 这在AVX2指令中不是严格要求的，但可能提高性能。
 struct alignas(64) NnueAccumulator {
-    // Two vectors of size N. v[0] for white's, and v[1] for black's perspectives.
+    // 两个大小为N的向量。v[0]用于白方视角，v[1]用于黑方视角。
     int16_t v[2][N];
 
-    // This will be utilised in later code snippets to make the access less verbose
+    // 在后续代码片段中将利用此操作符使访问更简洁
     int16_t* operator[](Color perspective) {
         return v[perspective];
     }
@@ -930,31 +929,30 @@ struct alignas(64) NnueAccumulator {
 
 ```cpp
 void refresh_accumulator(
-    const LinearLayer&      layer,            // this will always be L_0
-    NnueAccumulator&        new_acc,          // storage for the result
-    const std::vector<int>& active_features,  // the indices of features that are active for this position
-    Color                   perspective       // the perspective to refresh
+    const LinearLayer&      layer,            // 这将始终是 L_0
+    NnueAccumulator&        new_acc,          // 存储结果的变量
+    const std::vector<int>& active_features,  // 活跃特征的索引，适用于此位置
+    Color                   perspective       // 刷新的视角
 ) {
-    // The compiler should use one register per value, and hopefully
-    // won't spill anything. Always check the assembly generated to be sure!
+    // 编译器应该对每个值使用一个寄存器，并且希望不会溢出。始终检查生成的汇编代码以确保！
     constexpr int register_width = 256 / 16;
-    static_assert(M % register_width == 0, "We're processing 16 elements at a time");
+    static_assert(M % register_width == 0, "我们一次处理16个元素");
     constexpr int num_chunks = M / register_width;
     __m256i regs[num_chunks];
 
-    // Load bias to registers and operate on registers only.
+    // 将偏置加载到寄存器中，只对寄存器进行操作。
     for (int i = 0; i < num_chunks; ++i) {
         regs[i] = _mm256_load_si256(&layer.bias[i * register_width]);
     }
 
     for (int a : active_features) {
         for (int i = 0; i < num_chunks; ++i) {
-            // Now we do 1 memory operation instead of 2 per loop iteration.
+            // 现在，每次循环迭代只需进行1次内存操作，而不是2次。
             regs[i] = _mm256_add_epi16(regs[i], _mm256_load_si256(&layer.weight[a][i * register_width]));
         }
     }
 
-    // Only after all the accumulation is done do the write.
+    // 只有在所有累积完成后才进行写操作。
     for (int i = 0; i < num_chunks; ++i) {
         _mm256_store_si256(&new_acc[perspective][i * register_width], regs[i]);
     }
@@ -965,43 +963,41 @@ void refresh_accumulator(
 
 ```cpp
 void update_accumulator(
-    const LinearLayer&      layer,            // this will always be L_0
-    NnueAccumulator&        new_acc,          // it's nice to have already provided storage for
-                                              // the new accumulator. Relevant parts will be overwritten
-    const NNueAccumulator&  prev_acc,         // the previous accumulator, the one we're reusing
-    const std::vector<int>& removed_features, // the indices of features that were removed
-    const std::vector<int>& added_features,   // the indices of features that were added
-    Color                   perspective       // the perspective to update, remember we have two,
-                                              // they have separate feature lists, and it even may happen
-                                              // that one is updated while the other needs a full refresh
+    const LinearLayer&      layer,            // 这将始终为L_0
+    NnueAccumulator&        new_acc,          // 为新的累加器提供已经分配的存储空间，相关部分将被覆盖
+    const NNueAccumulator&  prev_acc,         // 上一个累加器，我们正在重用它
+    const std::vector<int>& removed_features, // 被移除的特征的索引
+    const std::vector<int>& added_features,   // 被添加的特征的索引
+    Color                   perspective       // 要更新的视角，记住我们有两个，
+                                              // 它们有独立的特征列表，甚至可能发生一个被更新而另一个需要完全刷新的情况
 ) {
-    // The compiler should use one register per value, and hopefully
-    // won't spill anything. Always check the assembly generated to be sure!
+    // 编译器应该为每个值使用一个寄存器，并且希望
+    // 不会溢出任何内容。始终检查生成的汇编代码以确保！
     constexpr int register_width = 256 / 16;
-    static_assert(M % register_width == 0, "We're processing 16 elements at a time");
+    static_assert(M % register_width == 0, "我们一次处理16个元素");
     constexpr int num_chunks = M / register_width;
     __m256i regs[num_chunks];
 
-    // Load the previous values to registers and operate on registers only.
+    // 将以前的值加载到寄存器中，仅在寄存器上操作。
     for (int i = 0; i < num_chunks; ++i) {
         regs[i] = _mm256_load_si256(&prev_acc[perspective][i * register_width]);
     }
 
-    // Then we subtract the weights of the removed features
+    // 然后我们减去被移除特征的权重
     for (int r : removed_features) {
         for (int i = 0; i < num_chunks; ++i) {
             regs[i] = _mm256_sub_epi16(regs[i], _mm256_load_si256(&layer.weight[r][i * register_width]));
         }
     }
 
-    // Similar for the added features, but add instead of subtracting
+    // 类似地，对于被添加的特征，添加而不是减去
     for (int a : added_features) {
         for (int i = 0; i < num_chunks; ++i) {
             regs[i] = _mm256_add_epi16(regs[i], _mm256_load_si256(&layer.weight[a][i * register_width]));
         }
     }
 
-    // Only after all the accumulation is done do the write.
+    // 只有在所有累加完成后才进行写入。
     for (int i = 0; i < num_chunks; ++i) {
         _mm256_store_si256(&new_acc[perspective][i * register_width], regs[i]);
     }
@@ -1014,38 +1010,37 @@ void update_accumulator(
 
 ```cpp
 int32_t* linear(
-    const LinearLayer& layer,  // the layer to use. We have two: L_1, L_2
-    int32_t*           output, // the already allocated storage for the result
-    const int8_t*      input   // the input, which is the output of the previous ClippedReLU layer
+    const LinearLayer& layer,  // 要使用的层。我们有两个：L_1，L_2
+    int32_t*           output, // 已分配的结果存储空间
+    const int8_t*      input   // 输入，即前一个ClippedReLU层的输出
 ) {
     constexpr int register_width = 256 / 8;
-    assert(layer.num_inputs % register_width == 0, "We're processing 32 elements at a time");
-    assert(layer.num_outputs % 4 == 0, "We unroll by 4");
+    assert(layer.num_inputs % register_width == 0, "我们每次处理32个元素");
+    assert(layer.num_outputs % 4 == 0, "我们每次展开4个元素");
     const int num_in_chunks = layer.num_inputs / register_width;
     const int num_out_chunks = layer.num_outputs / 4;
 
     for (int i = 0; i < num_out_chunks; ++i) {
-        // Prepare weight offsets. One offset for one row of weights.
-        // This is a simple index into a 2D array.
+        // 准备权重偏移量。每一行权重都有一个偏移量。
+        // 这是对二维数组的简单索引。
         const int offset0 = (i * 4 + 0) * layer.num_inputs;
         const int offset1 = (i * 4 + 1) * layer.num_inputs;
         const int offset2 = (i * 4 + 2) * layer.num_inputs;
         const int offset3 = (i * 4 + 3) * layer.num_inputs;
 
-        // Accumulation starts from 0, we add the bias only at the end.
+        // 累加从0开始，最后才添加偏置。
         __m256i sum0 = _mm256_setzero_si256();
         __m256i sum1 = _mm256_setzero_si256();
         __m256i sum2 = _mm256_setzero_si256();
         __m256i sum3 = _mm256_setzero_si256();
 
-        // Each innermost loop processes a 32x4 chunk of weights, so 128 weights at a time!
+        // 每个最内层循环处理一个32x4的权重块，因此每次处理128个权重！
         for (int j = 0; j < num_in_chunks; ++j) {
-            // We unroll by 4 so that we can reuse this value, reducing the number of
-            // memory operations required.
+            // 我们展开4个，这样我们可以重复使用这个值，减少所需的内存操作次数。
             const __m256i in = _mm256_load_si256(&input[j * register_width]);
 
-            // This function processes a 32x1 chunk of int8 and produces a 8x1 chunk of int32.
-            // For definition see below.
+            // 这个函数处理一个32x1的int8块，并生成一个8x1的int32块。
+            // 定义见下文。
             m256_add_dpbusd_epi32(sum0, in, _mm256_load_si256(&layer.weights[offset0 + j * register_width]));
             m256_add_dpbusd_epi32(sum1, in, _mm256_load_si256(&layer.weights[offset1 + j * register_width]));
             m256_add_dpbusd_epi32(sum2, in, _mm256_load_si256(&layer.weights[offset2 + j * register_width]));
@@ -1053,10 +1048,10 @@ int32_t* linear(
         }
 
         const __m128i bias = _mm_load_si128(&layer.bias[i * 4]);
-        // This function adds horizontally 8 values from each sum together, producing 4 int32 values.
-        // For the definition see below.
+        // 这个函数将每个sum中的8个值进行水平相加，生成4个int32值。
+        // 定义见下文。
         __m128i outval = m256_haddx4(sum0, sum1, sum2, sum3, bias);
-        // Here we account for the weights scaling.
+        // 这里考虑到了权重缩放。
         outval = _mm_srai_epi32(outval, log2_weight_scale);
         _mm_store_si128(&output[i * 4], outval);
     }
@@ -1077,19 +1072,19 @@ int32_t* linear(
 void m256_add_dpbusd_epi32(__m256i& acc, __m256i a, __m256i b) {
 #if defined (USE_VNNI)
 
-    // This does exactly the same thing as explained below but in one instruction.
+    // 这行代码在一条指令中完成了与下面解释的完全相同的操作。
     acc = _mm256_dpbusd_epi32(acc, a, b);
 
 #else
 
-    // Multiply a * b and accumulate neighbouring outputs into int16 values
+    // 将a和b相乘并将相邻的输出累加到int16值中
     __m256i product0 = _mm256_maddubs_epi16(a, b);
 
-    // Multiply product0 by 1 (idempotent) and accumulate neighbouring outputs into int32 values
+    // 将product0乘以1（幂等操作）并将相邻的输出累加到int32值中
     __m256i one = _mm256_set1_epi16(1);
     product0 = _mm256_madd_epi16(product0, one);
 
-    // Add to the main int32 accumulator.
+    // 添加到主要的int32累加器中。
     acc = _mm256_add_epi32(acc, product0);
 
 #endif
@@ -1130,20 +1125,20 @@ __m128i m256_haddx4(__m256i sum0, __m256i sum1, __m256i sum2, __m256i sum3, __m1
 
 ```cpp
 int lsb(std::uint32_t v) {
-    // returns the least significant set bit in v
-    // implementation detail
-    // can be implemented for example using compiler intrinsics
+    // 返回 v 中最低有效位
+    // 实现细节
+    // 可以使用编译器内置函数来实现
     // https://www.chessprogramming.org/BitScan#Leading_Zero_Count
 }
 
-// This implementation requires changing the layout and expanding the weights to int16.
-// We will transpose the weights as now we'll be going through the columns instead of rows.
+// 这种实现需要改变布局并将权重扩展为 int16。
+// 我们将权重进行转置，因为现在我们将遍历列而不是行。
 void load_weights(
     const LinearLayer& layer,
     const int8_t* data
 ) {
     static_assert(is_same_v<LinearLayer::WeightType, int16_t>,
-        "This approach requires weights to be 16 bit. Otherwise it's hard to widen the multiplication output to 32 bits.");
+        "这种方法需要16位的权重。否则，将乘法输出扩展到32位很困难。");
 
     for (int i = 0; i < layer.num_outputs; ++i) {
         for (int j = 0; j < layer.num_inputs; ++j) {
@@ -1151,12 +1146,12 @@ void load_weights(
         }
     }
 
-    // For AVX2 we must also swap some lanes in the weights. This is
-    // because AVX2 registers functions as two 128 bit ones, and
-    // therefore some data is interleaved in the inference process.
-    // This makes it so that they end up where we want.
-    // Will be more apparent in the visualization.
-    // This effectively swaps out the middle 2 64-bit chunks in each 256-bit chunk.
+    // 对于 AVX2，我们还必须在权重中交换一些通道。这是因为
+    // AVX2寄存器功能相当于两个128位的，因此
+    // 在推理过程中一些数据是交错的。
+    // 这样可以使它们最终到达我们想要的位置。
+    // 在可视化中将更明显。
+    // 这有效地在每个256位块中交换了中间的2个64位块。
     for (int i = 0; i < layer.num_outputs; ++i) {
         for (int j = 0; j < layer.num_inputs; ++j) {
             const int simd_lane = j % 16;
@@ -1177,37 +1172,37 @@ int32_t* linear_sparse_input(
     const int8_t*      input
 ) {
     static_assert(is_same_v<LinearLayer::WeightType, int16_t>,
-        "This approach requires weights to be 16 bit. Otherwise it's hard to widen the multiplication output to 32 bits.");
+        "这种方法需要16位的权重。否则，将乘法输出扩展到32位很困难。");
 
     constexpr int register_width = 256 / 8;
     constexpr int input_register_width = register_width; // uint8_t
     constexpr int output_register_width = register_width / 4; // int32_t
-    constexpr int output_chunk_size = output_register_width * 2; // we will be processing 2 registers at a time
-    assert(layer.num_outputs % output_chunk_size == 0, "We're processing 16 output elements at a time");
+    constexpr int output_chunk_size = output_register_width * 2; // 我们将一次处理两个寄存器
+    assert(layer.num_outputs % output_chunk_size == 0, "我们一次处理16个输出元素");
     assert(layer.num_inputs % input_register_width == 0);
 
-    // We need to find out the indices of the input values that are non-zero
+    // 我们需要找出输入值大于零的索引
     uint16_t nnz_input_indices[layer.num_inputs];
     int num_nnz_input_indices = 0;
 
     for (int i = 0; i < layer.num_inputs; i += input_register_width) {
         const __m256i input_chunk = _mm256_load_si256(input + i);
-        // Find out where the values are greater than 0 and set the corresponding bits in nnz
+        // 找出哪些值大于0，并在 nnz 中设置相应的位
         uint32_t nnz =
             _mm256_movemask_epi8(
                 _mm256_cmpgt_epi8(input_chunk, _mm256_setzero_si256())
             );
 
-        // Extract the indices of the set bits in nnz
+        // 提取 nnz 中设置位的索引
         while (nnz) {
             const int lsb_index = lsb(nnz);
-            nnz &= nnz - 1; // reset the least significant set bit in nnz
+            nnz &= nnz - 1; // 在 nnz 中重置最低有效设定位
             nnz_input_indices[num_nnz_input_indices++] = i + lsb_index;
         }
     }
 
-    // First we just copy the biases. Compilers are good at vectorizing this.
-    // Could also use memcpy
+    // 首先我们只复制偏置项。编译器擅长矢量化这个操作。
+    // 也可以使用memcpy
     for (int i = 0; i < layer.num_outputs; ++i) {
         output[i] = layer.biases[i];
     }
@@ -1215,9 +1210,9 @@ int32_t* linear_sparse_input(
     const int num_chunks = layer.num_outputs / output_chunk_size;
     int i = 0;
     for (; i + 1 < num_nnz_input_indices; i += 2) {
-        // We will try to process 2 at a time as much as possible,
-        // as we can utilize the available intrinsics better.
-        // Will become more apparant on the visualization.
+        // 我们将尽可能地每次处理两个，
+        // 因为我们可以更好地利用可用的内置函数。
+        // 在可视化中将更明显。
         const int input_id0 = nnz_input_indices[i+0];
         const int input_id1 = nnz_input_indices[i+1];
         const __m256i factor = _mm256_set1_epi32(
@@ -1228,17 +1223,17 @@ int32_t* linear_sparse_input(
             const int output_offset0 = (j*2 + 0)*output_register_width;
             const int output_offset1 = (j*2 + 1)*output_register_width;
 
-            // Weights are packed 2 times as densely as the output.
+            // 权重的打包密度是输出的两倍。
             const int weight_offset  = (j*1 + 0)*output_register_width;
 
-            // Each chunk requires a load+store.
-            // However, if the output is small enough it can be unrolled and
-            // all outputs might fit into the registers.
-            // Though the compiler probably is not allowed to do it by itself.
+            // 每个块需要加载+存储。
+            // 但是，如果输出足够小，它可以展开并且
+            // 所有输出可能适应寄存器。
+            // 尽管编译器可能不允许自己这么做。
             __m256i sum0 = _mm256_load_si256(output + output_offset0);
             __m256i sum1 = _mm256_load_si256(output + output_offset1);
 
-            // Remember, weights are 16 bit here, so one __m256i can hold 16 of them.
+            // 记住，这里的权重是16位的，所以一个__m256i可以容纳16个。
             const __m256i col0 = _mm256_load_si256(
                 layer.weights + input_id0 * layer.num_outputs + weight_offset
             );
@@ -1246,7 +1241,7 @@ int32_t* linear_sparse_input(
                 layer.weights + input_id1 * layer.num_outputs + weight_offset
             );
 
-            // See next below for visualization
+            // 查看下面的可视化
             m256_process_chunk(sum0, sum1, col0, col1, factor);
 
             _mm256_store_si256(output + output_offset0, sum0);
@@ -1254,7 +1249,7 @@ int32_t* linear_sparse_input(
         }
     }
 
-    // Process the remaining single input
+    // 处理剩下的单输入
     for (; i < num_nnz_input_indices; ++i) {
         const int input_id = nnz_input_indices[i];
         const __m256i factor = _mm256_set1_epi32(input[input_id]);
@@ -1295,8 +1290,8 @@ int32_t* linear_sparse_input(
 
 ```cpp
 inline void m256_process_chunk(__m256i& sum0, __m256i& sum1, __m256i col0, __m256i col1, __m256i factor) {
-    // We interleave the two columns, because madd adds adjacent values.
-    // This way we effectively add the results from both columns.
+    // 我们交错处理两列，因为madd会相加相邻的值。
+    // 这样我们有效地将两列的结果相加。
     sum0 = _mm256_add_epi32(
         sum0, _mm256_madd_epi16(factor, _mm256_unpacklo_epi16(col0, col1))
     );
@@ -1311,14 +1306,14 @@ inline void m256_process_chunk(__m256i& sum0, __m256i& sum1, __m256i col0, __m25
 在第一种方法中，我们使用了 16 位权重，但也可以使用 8 位权重，解包的乐趣会稍微多一些。我们还将看到另一种使用查找表计算非零输入索引的方法。有关后者的更多方法和测量，请参见[此处](https://github.com/syzygy1/Cfish/issues/204#issue-944790893)。
 
 ```cpp
-// This implementation requires changing the layout and expanding the weights to int16.
-// We will transpose the weights as now we'll be going through the columns instead of rows.
+// 此实现需要更改布局并将权重扩展为int16。
+// 现在我们将转置权重，因为现在我们将按列而不是按行进行操作。
 void load_weights(
     const LinearLayer& layer,
     const int8_t* data
 ) {
     static_assert(is_same_v<LinearLayer::WeightType, int8_t>,
-        "This approach requires weights to be 8 bit.");
+        "这种方法要求权重为8位。");
 
     for (int i = 0; i < layer.num_outputs; ++i) {
         for (int j = 0; j < layer.num_inputs; ++j) {
@@ -1326,14 +1321,14 @@ void load_weights(
         }
     }
 
-    // No need for clever tricks with shuffling the weights now.
-    // However, we will require one more zero weight column. We assume enough space is allocated.
+    // 现在不需要聪明的技巧来洗牌权重了。
+    // 但是，我们将需要一个额外的零权重列。我们假设已经分配了足够的空间。
     for (int i = 0; i < layer.num_outputs; ++i) {
         layer.weights[layer.num_inputs*layer.num_outputs + i] = 0;
     }
 }
 
-// A constexpr version of least significant bit computation.
+// 一个constexpr版本的最低有效位计算。
 static constexpr int lsb_constexpr(std::uint32_t v)
 {
     int c = 0;
@@ -1346,8 +1341,8 @@ static constexpr int lsb_constexpr(std::uint32_t v)
     return c;
 }
 
-// A lookup table of indices of non-zero bits in the input.
-// Each entry of std::array<std::uint16_t, 8> can be interpreted as __m128i.
+// 输入中非零位的索引查找表。
+// std::array<std::uint16_t, 8>的每个条目可以被解释为__m128i。
 alignas(64) static constexpr std::array<std::array<std::uint16_t, 8>, 256> LookupTableIndices = [](){
     std::array<std::array<std::uint16_t, 8>, 256> v{};
     for (int i = 0; i < 256; ++i)
@@ -1365,8 +1360,8 @@ alignas(64) static constexpr std::array<std::array<std::uint16_t, 8>, 256> Looku
     return v;
 }();
 
-// A lookup table for popcount of a byte.
-// Using the dedicated popcnt instruction might or might not work better.
+// 字节的popcount的查找表。
+// 使用专用的popcnt指令可能效果更好，也可能不是。
 static constexpr std::array<std::uint8_t, 256> LookupTableCounts = [](){
     std::array<std::uint8_t, 256> v{};
     for (int i = 0; i < 256; ++i)
@@ -1388,26 +1383,26 @@ int32_t* linear_sparse_input(
     int32_t*           output,
     const int8_t*      input
 ) {
-    // We will take a tiled approach with accumulators in registers.
-    // Similar to how the feature transformer is best implemented.
+    // 我们将采用瓷砖化的方法，寄存器中使用累加器。
+    // 类似于最佳实现特征变换器的方式。
     constexpr int input_register_width = 256 / 8;
     constexpr int chunk_size = 256 / 32;
     constexpr int num_chunks_per_tile = 8;
     constexpr int tile_size = chunk_size * num_chunks_per_tile;
-    assert(layer.num_outputs % tile_size == 0, "We're processing 64 output elements at a time. Though it's easy to change it.");
-    assert(num_chunks_per_tile % 4 == 0, "We're processing 4 chunks at a time.");
+    assert(layer.num_outputs % tile_size == 0, "我们一次处理64个输出元素。虽然很容易改变它。");
+    assert(num_chunks_per_tile % 4 == 0, "我们一次处理4个块。");
     constexpr int num_tiles = layer.num_outputs / tile_size;
 
-    // We need to find out the indices of the input values that are non-zero
-    // We'll use a lookup table approach. Overallocate 16 elements
-    // so that stores are always valid (we will be using larger stores)
+    // 我们需要找出输入值中非零的索引
+    // 我们将使用查找表的方法。多分配16个元素
+    // 这样存储总是有效的（我们将使用更大的存储器）
     uint16_t nnz_input_indices[layer.num_inputs + 16];
     int num_nnz_input_indices = 0;
 
     {
-        // These will be used for offseting the looked up indices.
-        // A variation with int16 lookup is also possible (see the link above)
-        // and is faster in isolation, but requires more memory and may trash the cache.
+        // 这些将用于偏移查找到的索引。
+        // 还可以使用int16查找的变种（参见上面的链接）
+        // 在独立运行时更快，但需要更多内存，可能会破坏缓存。
         __m128i base = _mm_set1_epi16(0);
         __m128i increment = _mm_set1_epi16(8);
         for (int i = 0; i < layer.num_inputs; i += input_register_width) {
@@ -1424,8 +1419,8 @@ int32_t* linear_sparse_input(
             unsigned c2 = LookupTableCounts[b2];
             unsigned c3 = LookupTableCounts[b3];
 
-            // These stores can reach above layer.num_inputs in extreme cases. That's why we preallocate.
-            // Only the first c0 values matter.
+            // 这些存储可以在极端情况下超过layer.num_inputs。这就是我们预分配的原因。
+            // 只有前c0个值才重要。
             _mm_storeu_si128(
                 reinterpret_cast<__m128i*>(nnz_input_indices + num_nnz_input_indices),
                 _mm_add_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(&LookupTableIndices[b0])), base)
@@ -1456,13 +1451,12 @@ int32_t* linear_sparse_input(
         }
     }
 
-    // We will be processing 4 inputs at a time, and to avoid having two similar loops
-    // we pad the input indices to a multiple of 4. For the added ones we use a dummy input
-    // with all weights set to 0.
+    // 我们将一次处理4个输入，为了避免有两个相似的循环
+    // 我们将输入索引填充到4的倍数。对于添加的输入，我们使用所有权重都设置为0的虚拟输入。
     while (num_nnz_input_indices % 4 != 0)
       nnz_input_indices[num_nnz_input_indices++] = layer.num_inputs;
 
-    // Hopefully will fit in the register file.
+    // 希望适应寄存器文件。
     __m256i acc[num_chunks_per_tile];
 
     for (int i = 0; i < num_tiles; ++i)
@@ -1483,8 +1477,8 @@ int32_t* linear_sparse_input(
             const __m256i* col3 = reinterpret_cast<const __m256i*>(&layer.weights[nnz_input_indices[j+3] * layer.num_outputs + i * tile_size]);
             for (int k = 0; k < num_chunks_per_tile / 4; ++k)
             {
-                // Due to AVX2 interpreting the 256-bit registers as 2 128-bit ones the unpacking
-                // shuffles the lanes. We will have to account for that when getting the final result.
+                // 由于AVX2将256位寄存器解释为2个128位寄存器，所以拆分
+                // 重新排列通道。在获得最终结果时我们必须考虑到这一点。
                 m256_process_chunk_alternative(
                     acc[k*4 + 0], acc[k*4 + 1], acc[k*4 + 2], acc[k*4 + 3],
                          col0[k],      col1[k],      col2[k],      col3[k],
@@ -1495,7 +1489,7 @@ int32_t* linear_sparse_input(
 
         for (int k = 0; k < num_chunks_per_tile / 4; ++k)
         {
-            // We have to unshuffle the lanes. See the visualization to get a better picture.
+            // 我们必须对通道进行重新排列。查看可视化图像以获得更清晰的图片。
             const __m128i acc00 = _mm256_extracti128_si256(acc[k*4 + 0], 0);
             const __m128i acc01 = _mm256_extracti128_si256(acc[k*4 + 0], 1);
             const __m128i acc10 = _mm256_extracti128_si256(acc[k*4 + 1], 0);
@@ -1528,7 +1522,7 @@ inline void m256_process_chunk_alternative(
     __m256i  col0, __m256i  col1, __m256i  col2, __m256i  col3,
     __m256i  mul0,                __m256i  mul2
 ) {
-    // For madd.
+    // 为 madd。
     const __m256i ones = _mm256_set1_epi16(1);
 
     const __m256i prod0 = _mm256_maddubs_epi16(mul0, _mm256_unpacklo_epi8(col0, col1));
@@ -1560,13 +1554,12 @@ void load_weights(
     const LinearLayer& layer,
     const int8_t* data
 ) {
-    // This goes the same as in the case with sparse inputs, however
-    // the weights matrix is no longer continuous and we need to fill
-    // some block indices to know which weights correspond to which ouputs.
-    // This can be done either by discovering the zero blocks during loading,
-    // or with a different serialized format with the block indices precomputed.
-    // We will omit this here and just assume that layer.nnz_block_ids[input_id][4]
-    // contains non-zero weight block indices corresponding to each input.
+    // 这部分与稀疏输入的情况相同，但是权重矩阵不再是连续的，
+    // 我们需要填充一些块索引，以了解哪些权重对应于哪些输出。
+    // 这可以通过在加载过程中发现零块来完成，
+    // 或者使用不同的序列化格式预先计算块索引。
+    // 在这里我们将省略这部分，并假设layer.nnz_block_ids[input_id][4]
+    // 包含与每个输入对应的非零权重块索引。
 }
 
 int32_t* linear_sparse_input_block_sparse_output(
@@ -1575,13 +1568,13 @@ int32_t* linear_sparse_input_block_sparse_output(
     const int8_t*      input
 ) {
     static_assert(is_same_v<LinearLayer::WeightType, int16_t>,
-        "This approach requires weights to be 16 bit. Otherwise it's hard to widen the multiplication output to 32 bits.");
+        "此方法要求权重为16位。否则，很难将乘法输出扩展到32位。");
 
     constexpr int register_width = 256 / 8;
     constexpr int input_register_width = register_width; // uint8_t
     constexpr int output_register_width = register_width / 4; // int32_t
-    constexpr int output_chunk_size = output_register_width * 2; // we will be processing 2 registers at a time
-    assert(layer.num_outputs % output_chunk_size == 0, "We're processing 16 output elements at a time");
+    constexpr int output_chunk_size = output_register_width * 2; // 我们一次处理2个寄存器
+    assert(layer.num_outputs % output_chunk_size == 0, "我们一次处理16个输出元素");
     assert(layer.num_inputs % input_register_width == 0);
 
     uint16_t nnz_input_indices[layer.num_inputs];
@@ -1596,7 +1589,7 @@ int32_t* linear_sparse_input_block_sparse_output(
 
         while (nnz) {
             const int lsb_index = lsb(nnz);
-            nnz &= nnz - 1; // reset the least significant set bit in nnz
+            nnz &= nnz - 1; // 重置nnz中最低位的1
             nnz_input_indices[num_nnz_input_indices++] = i + lsb_index;
         }
     }
@@ -1606,14 +1599,13 @@ int32_t* linear_sparse_input_block_sparse_output(
     }
 
     const int num_chunks = layer.num_outputs / output_chunk_size;
-    // There are always tradeoffs. We cannot process two inputs at a time, because
-    // they might have different non-zero weight blocks. Makes it visibly slower.
-    // There might be some tricks with AVX512, but AVX2 is fairly limited for this use case.
+    // 总是存在权衡。我们不能同时处理两个输入，因为它们可能具有不同的非零权重块。这会明显降低性能。
+    // 可能有一些AVX512的技巧，但是对于这种用例，AVX2功能相对有限。
     for (int i = 0; i < num_nnz_input_indices; ++i) {
         const int input_id = nnz_input_indices[i]
         const __m256i factor = _mm256_set1_epi32(input[input_id]);
 
-        // We have hardcoded 4 16-wide non-zero weight blocks per input.
+        // 我们在每个输入上有硬编码的4个16位宽的非零权重块。
         for (int j = 0; j < 4; ++j) {
             const int block_id = layer.nnz_block_ids[input_id][j];
             const int output_offset0 = (block_id*2 + 0)*output_register_width;
@@ -1653,28 +1645,28 @@ int32_t* linear_sparse_input_block_sparse_output(
 
 ```cpp
 int8_t* crelu16(,
-          int      size,   // no need to have any layer structure, we just need the number of elements
-          int8_t*  output, // the already allocated storage for the result
-    const int16_t* input   // the input, which is the output of the previous linear layer
+          int      size,   // 不需要任何层结构，只需知道元素数量
+          int8_t*  output, // 存储结果的已分配空间
+    const int16_t* input   // 输入，是上一线性层的输出
 ) {
     constexpr int in_register_width = 256 / 16;
     constexpr int out_register_width = 256 / 8;
-    assert(size % out_register_width == 0, "We're processing 32 elements at a time");
+    assert(size % out_register_width == 0, "每次处理32个元素");
     const int num_out_chunks = size / out_register_width;
 
-    const __m256i zero    = _mm256_setzero_si256();
-    const int     control = 0b11011000; // 3, 1, 2, 0; lane 0 is the rightmost one
+    const __m256i zero    = _mm256_setzero_si256();  // 全零向量
+    const int     control = 0b11011000;  // 3、1、2、0；0号通道在最右边
 
     for (int i = 0; i < num_out_chunks; ++i) {
         const __m256i in0 = _mm256_load_si256(&input[(i * 2 + 0) * in_register_width]);
         const __m256i in1 = _mm256_load_si256(&input[(i * 2 + 1) * in_register_width]);
 
         const __m256i result =
-            // packs changes the order, so we need to fix that with a permute
+            // packs会改变顺序，因此我们需要使用permute来修复顺序
             _mm256_permute4x64_epi64(
-                // clamp from below
+                // 从下方进行截断
                 _mm256_max_epi8(
-                    // packs saturates to 127, so we only need to clamp from below
+                    // packs会饱和到127，因此我们只需要从下方进行截断
                     _mm256_packs_epi16(in0, in1),
                     zero
                 ),
@@ -1694,13 +1686,13 @@ int8_t* crelu16(,
 
 ```cpp
 int8_t* crelu32(,
-          int      size,   // no need to have any layer structure, we just need the number of elements
-          int8_t*  output, // the already allocated storage for the result
-    const int32_t* input   // the input, which is the output of the previous linear layer
+          int      size,   // 无需任何层结构，只需知道元素数量
+          int8_t*  output, // 用于存储结果的已分配空间
+    const int32_t* input   // 输入，即前一个线性层的输出
 ) {
     constexpr int in_register_width = 256 / 32;
     constexpr int out_register_width = 256 / 8;
-    assert(size % out_register_width == 0, "We're processing 32 elements at a time");
+    assert(size % out_register_width == 0, "我们一次处理32个元素");
     const int num_out_chunks = size / out_register_width;
 
     const __m256i zero    = _mm256_setzero_si256();
@@ -1747,64 +1739,57 @@ int8_t* crelu32(,
 然后代码可以像下面这样简单：
 
 ```cpp
-// Since the output is always 0/1 outside of the int8 range the input could
-// in theory be (saturated) int8, BUT there is no int8 multiplication in AVX2 so we
-// will take int16 for convenience.
+// 由于输出在int8范围之外始终为0/1，理论上输入可以是饱和的int8，但是AVX2中没有int8乘法，所以我们将使用int16以便使用方便。
 int8_t* quantmoid4(
-          int      size,
-    const int16_t* input,
-          int8_t*  output
+          int      size,  // 大小
+    const int16_t* input,  // 输入
+          int8_t*  output  // 输出
 ) {
-    constexpr int in_register_width = 256 / 16;
-    constexpr int out_register_width = 256 / 8;
-    assert(size % out_register_width == 0); // We won't bother with the remainder here
-    const int num_out_chunks = size / out_register_width;
+    constexpr int in_register_width = 256 / 16;  // 输入寄存器宽度
+    constexpr int out_register_width = 256 / 8;  // 输出寄存器宽度
+    assert(size % out_register_width == 0);  // 我们不会考虑余数
 
-    const __m256i cst_127_epi16 = _mm256_set1_epi16(127);
-    const __m256i cst_126_epi8 = _mm256_set1_epi8(126);
+    const int num_out_chunks = size / out_register_width;  // 输出块数
 
-    // Since AVX2 processes interleaves between 128-bit lanes we will have to
-    // revert this at the end, to combine two processed inputs into one output.
-    // This Control contains the information how to permute the 64-bit lanes
-    // of the result. Control = [0, 2, 1, 3].
+    const __m256i cst_127_epi16 = _mm256_set1_epi16(127);  // 常量
+    const __m256i cst_126_epi8 = _mm256_set1_epi8(126);  // 常量
+
+    // 由于AVX2在128位lane之间进行交错处理，我们将在最后恢复，将两个处理过的输入组合成一个输出。
+    // 这个Control包含了将结果的64位lane重新排列的信息。Control = [0, 2, 1, 3]。
     constexpr int Control = 0b11011000;
     for (int i = 0; i < num_out_chunks; ++i)
     {
         __m256i v0 = _mm256_load_si256(&input[(i * 2 + 0) * in_register_width]);
         __m256i v1 = _mm256_load_si256(&input[(i * 2 + 1) * in_register_width]);
 
-        // We will need the initial input sign for the blend later.
-        // Blend uses the highest bit only for the choice, and that
-        // happens to be the sign bit.
+        // 我们将需要混合后的初始输入符号。
+        // 混合仅使用最高位进行选择，而最高位恰好是符号位。
         __m256i sign = _mm256_packs_epi16(v0, v1);
 
-        // From the identity stated earlier.
+        // 根据前面给出的等式。
         // v0 = min(abs(input[i]), 127) - 127;
         v0 = _mm256_subs_epu16(cst_127_epi16, _mm256_abs_epi16(v0));
         v1 = _mm256_subs_epu16(cst_127_epi16, _mm256_abs_epi16(v1));
 
-        // Since we use mulhi later we have to prepare the input such that
-        // the high part (16 highest bits, as the 16-bit multiplication produces
-        // a 32-bit result) after the multiplication land correctly. We want to
-        // divide by 256==2^8 later (right shift by 8), so we would have 8 spare
-        // bits that we would need to get rid of (from the full 32-bit result).
-        // So we can first shift left by 4 bits, which the multiplication (squaring)
-        // will double to 8, and so the 16-bit high part of the 32-bit result will
-        // exctract exactly what we want.
+        // 由于之后要使用mulhi，我们必须准备输入，使得乘法后的高位
+        // （16个最高位，因为16位乘法产生32位结果）能正确处理。
+        // 我们希望之后除以256==2^8（右移8位），因此我们将有8个多余的位
+        // 我们需要消除（从完整的32位结果中）。
+        // 所以我们可以先左移4位，乘法（平方）将使其加倍为8，
+        // 因此32位结果的16位高位将恰好提取我们想要的。
         v0 = _mm256_slli_epi16(v0, 4);
         v1 = _mm256_slli_epi16(v1, 4);
 
         v0 = _mm256_mulhi_epi16(v0, v0);
         v1 = _mm256_mulhi_epi16(v1, v1);
 
-        // Now we can convert to int8 after that for the rest.
+        // 现在我们可以在此之后转换为int8。
         v0 = _mm256_packs_epi16(v0, v1);
 
-        // Blend between v and 126-v, based on the input sign, so that we effectively
-        // evaluate the right part of the piece-wise function.
+        // 根据输入符号，在v和126-v之间混合，以便有效地评估分段函数的右侧部分。
         v0 = _mm256_blendv_epi8(_mm256_subs_epi8(cst_126_epi8, v0), v0, sign);
 
-        // Deinterleave the output due to AVX2 semantics.
+        // 由于AVX2语义，解交织输出。
         _mm256_store_si256(&output[i * out_register_width], _mm256_permute4x64_epi64(v0, Control));
     }
 
@@ -1827,7 +1812,7 @@ void average_pooling_2(
           uint8_t*  output
 ) {
     constexpr int register_width = 256 / 8;
-    assert(size % (register_width * 2) == 0); // We won't bother with the remainder here
+    assert(size % (register_width * 2) == 0); // 在这里我们不会考虑余数。
     const int num_out_chunks = size / (register_width * 2);
 
     for (int i = 0; i < num_out_chunks; ++i)
@@ -1851,7 +1836,7 @@ void max_pooling_2(
           uint8_t*  output
 ) {
     constexpr int register_width = 256 / 8;
-    assert(size % (register_width * 2) == 0); // We won't bother with the remainder here
+    assert(size % (register_width * 2) == 0); // 在这里我们不会考虑余数。
     const int num_out_chunks = size / (register_width * 2);
 
     for (int i = 0; i < num_out_chunks; ++i)
@@ -1872,32 +1857,33 @@ void max_pooling_2(
 
 ```cpp
 void product_pooling_2(
-          int      size,
-    const int16_t* input,
-          uint8_t* output
+          int      size,               // 尺寸
+    const int16_t* input,               // 输入数组
+          uint8_t* output               // 输出数组
 ) {
-    constexpr int in_register_width = 256 / 16;
-    constexpr int out_register_width = 256 / 8;
-    assert(size % (out_register_width * 2) == 0); // We won't bother with the remainder here
-    const int num_out_chunks = size / (out_register_width * 2);
+    constexpr int in_register_width = 256 / 16;       // 输入寄存器宽度
+    constexpr int out_register_width = 256 / 8;       // 输出寄存器宽度
+    assert(size % (out_register_width * 2) == 0);     // 我们不考虑余数
 
-    // For deinterleave
+    const int num_out_chunks = size / (out_register_width * 2);     // 输出块的数量
+
+    // 用于解交错
     constexpr int Control = 0b11011000;
 
     for (int i = 0; i < num_out_chunks; ++i)
     {
-        // We process 4 input registers at a time and produce one output register.
-        // This is because we do 2->1 reduction and input type is twice the width of the output.
+        // 我们一次处理4个输入寄存器，并生成一个输出寄存器。
+        // 这是因为我们进行2到1的缩减，并且输入类型的宽度是输出类型的两倍。
         const __m256i v0a = _mm256_load_si256(&input[(i * 2 + 0)                  * in_register_width]);
         const __m256i v0b = _mm256_load_si256(&input[(i * 2 + 1)                  * in_register_width]);
         const __m256i v1a = _mm256_load_si256(&input[(i * 2 + 0 + num_out_chunks) * in_register_width]);
         const __m256i v1b = _mm256_load_si256(&input[(i * 2 + 1 + num_out_chunks) * in_register_width]);
 
-        // Multiply and divide by 128 (right shift by 7), rounding towards 0.
+        // 乘以128并除以128（右移7位），向0舍入。
         const __m256i pa = _mm256_srli_epi16(_mm256_mullo_epi16(v0a, v1a), 7);
         const __m256i pb = _mm256_srli_epi16(_mm256_mullo_epi16(v0b, v1b), 7);
 
-        // Deinterleave
+        // 解交错
         out[j] = _mm256_permute4x64_epi64(_mm256_packs_epi16(pa, pb), Control);
     }
 }
@@ -1913,7 +1899,7 @@ void max_pooling_2(
           uint8_t*  output
 ) {
     constexpr int register_width = 256 / 8;
-    assert(size % (register_width * 2) == 0); // We won't bother with the remainder here
+    assert(size % (register_width * 2) == 0); // 在这里我们不会考虑余数
     const int num_out_chunks = size / (register_width * 2);
 
     for (int i = 0; i < num_out_chunks; ++i)
@@ -1937,7 +1923,7 @@ void max_pooling_2(
 解决这个问题的一种方法是直接在优化器中。这很好，因为裁剪是在步骤之后直接应用的，但需要访问优化器的源代码。例如：
 
 ```python
-# The min/max constants are specific for the Stockfish quantization scheme.
+# 这些最小/最大常量是特定于Stockfish量化方案的。
 train_params = [
     {'params' : [self.ft.weight, self.ft.bias] },
     {'params' : [self.l1.weight], 'min_weight' : -127/64, 'max_weight' : 127/64 },
@@ -1976,7 +1962,7 @@ def step(self, closure=None):
 或者，可以在优化器之外进行操作以获得更大的灵活性：
 
 ```python
-# The min/max constants are specific for the Stockfish quantization scheme.
+# 这些min/max常量是针对Stockfish量化方案特定的。
 self.weight_clipping = [
     {'params' : [self.l1.weight], 'min_weight' : -127/64, 'max_weight' : 127/64 },
     {'params' : [self.l2.weight], 'min_weight' : -127/64, 'max_weight' : 127/64 },
@@ -1985,7 +1971,7 @@ self.weight_clipping = [
 ```
 
 ```python
-# and call this in some step function
+# 并在某个步骤函数中调用此函数。
 def _clip_weights(self):
     for group in self.weight_clipping:
         for p in group['params']:
@@ -2001,7 +1987,7 @@ def _clip_weights(self):
 有时，更复杂的架构会使某些层的参数在训练期间成为两层的总和。就像特征分解一样，但适用于整个层（例如参见[this](https://github.com/calcitem/nnue-pytorch/blob/master/docs/nnue.md#multiple-psqt-outputs-and-multiple-subnetworks)）。我们可以这样解释：
 
 ```python
-# The min/max constants are specific for the Stockfish quantization scheme.
+# 这些min/max常量是针对Stockfish量化方案而特定的。
 self.weight_clipping = [
     {'params' : [self.l1.weight], 'min_weight' : -127/64, 'max_weight' : 127/64, 'virtual_params' : self.some_virtual_factor.weight },
     {'params' : [self.l2.weight], 'min_weight' : -127/64, 'max_weight' : 127/64 },
@@ -2018,7 +2004,7 @@ def _clip_weights(self):
             max_weight = group['max_weight']
             if 'virtual_params' in group:
                 virtual_params = group['virtual_params']
-                # The virtual layer is usually N times smaller
+                # 虚拟层通常是实际层的 N 倍更小。
                 xs = p_data_fp32.shape[0] // virtual_params.shape[0]
                 ys = p_data_fp32.shape[1] // virtual_params.shape[1]
                 expanded_virtual_layer = virtual_params.repeat(xs, ys)
@@ -2050,12 +2036,12 @@ Quantmoid4 是一个足够好的近似值，我们可以只将它用于正向传
 import torch
 import cupy as cp
 
-# For lazy compilation.
+# 用于懒惰编译。
 quantmoid_kernels = dict()
 def make_quantmoid4_forward_kernel():
     key = 'quantmoid4_forward_kernel'
     if not key in quantmoid_kernels:
-        # an approximation of sigmoid(x*4)
+        # sigmoid(x*4)的近似
         quantmoid4_forward_kernel = cp.RawKernel(r'''
             extern "C" __global__
             void quantmoid4_forward(
@@ -2067,7 +2053,7 @@ def make_quantmoid4_forward_kernel():
                 if (i >= total)
                    return;
 
-                // Remember that we want to scale the output to [0.0, 1.0]
+                // 注意，我们希望将输出缩放到[0.0, 1.0]
                 const float x = input[i];
                 const float v = min(floor(abs(x * 127.0f)), 127.0f) - 127.0f;
                 const float vv = floor(v * v / 256.0f);
@@ -2081,7 +2067,7 @@ def make_quantmoid4_forward_kernel():
         quantmoid_kernels[key] = quantmoid4_forward_kernel
     return quantmoid_kernels[key]
 
-# Now we define a python function that will encapsulate that raw kernel.
+# 现在我们定义一个Python函数来封装这个原始内核。
 def _quantmoid4(x):
     assert x.is_contiguous()
     assert x.is_cuda
@@ -2103,8 +2089,8 @@ def _quantmoid4(x):
     )
     return output
 
-# And now we define a class that pytorch will understand.
-# Here we substitute the gradient by the gradient for sigmoid(4x).
+# 现在我们定义一个pytorch可以理解的类。
+# 在这里，我们将梯度替换为sigmoid(4x)的梯度。
 class Quantmoid4(torch.autograd.Function):
   @staticmethod
   def forward(ctx, input):
@@ -2118,7 +2104,7 @@ class Quantmoid4(torch.autograd.Function):
 
 quantmoid4 = Quantmoid4.apply
 
-# Output for some verification
+# 用于验证的输出
 if __name__ == '__main__':
     for i in range(-255, 255):
         x = i / 127.0
@@ -2134,21 +2120,21 @@ if __name__ == '__main__':
 ```python
 import cupy as cp
 
-# Create the kernel
+# 创建内核
 kernel = cp.RawKernel(r'''
 void kernel_name(...) {
-    // your usual kernel code
+    // 你的常规内核代码
 }
 ''', 'kernel_name')
 
-# Optionally compile it, otherwise it will compile on first use
+# 可选择进行编译，否则将在首次使用时进行编译
 kernel.compile()
 
-# Run the kernel
+# 运行内核
 kernel(
-    grid=(batch_size,), # The grid shape
-    block=(num_threads,), # The block shape
-    args=(...) # The arguments that are passed to the kernel
+    grid=(batch_size,),  # 网格形状
+    block=(num_threads,),  # 块形状
+    args=(...)  # 传递给内核的参数
 )
 ```
 
@@ -2177,9 +2163,8 @@ struct SparseBatch {
         stm = new float[size];
         score = new float[size];
 
-        // New layout for the indices, now it's [size][MAX_ACTIVE_FEATURES].
-        // Also we don't need to sort the indices because the new implementation
-        // is fast regardless of the order!
+        // 索引的新布局，现在是 [size][MAX_ACTIVE_FEATURES]。
+        // 而且我们不需要对索引进行排序，因为新的实现无论顺序如何都很快！
         white_features_indices = new int[size * MAX_ACTIVE_FEATURES];
         black_features_indices = new int[size * MAX_ACTIVE_FEATURES];
 
@@ -2213,38 +2198,34 @@ struct SparseBatch {
 ```python
 class SparseBatch(ctypes.Structure):
     _fields_ = [
-        ('size', ctypes.c_int),
-        ('max_active_features', ctypes.c_int),
-        ('stm', ctypes.POINTER(ctypes.c_float)),
-        ('score', ctypes.POINTER(ctypes.c_float)),
-        ('white_features_indices', ctypes.POINTER(ctypes.c_int)),
-        ('black_features_indices', ctypes.POINTER(ctypes.c_int))
+        ('size', ctypes.c_int),  # 大小
+        ('max_active_features', ctypes.c_int),  # 最大活动特征数
+        ('stm', ctypes.POINTER(ctypes.c_float)),  # stm指针
+        ('score', ctypes.POINTER(ctypes.c_float)),  # 分数指针
+        ('white_features_indices', ctypes.POINTER(ctypes.c_int)),  # 白方特征索引指针
+        ('black_features_indices', ctypes.POINTER(ctypes.c_int))  # 黑方特征索引指针
     ]
 
     def get_tensors(self, device):
-        # This is illustrative. In reality you might need to transfer these
-        # to the GPU. You can also do it asynchronously, but remember to make
-        # sure the source lives long enough for the copy to finish.
+        # 这只是为了说明。在实际情况中，您可能需要将它们转移到GPU上。您还可以异步进行操作，但请记住确保源代码存活足够长，以便完成复制。
 
         stm_t = torch.from_numpy(np.ctypeslib.as_array(self.stm, shape=(self.size, 1)))
         score_t = torch.from_numpy(np.ctypeslib.as_array(self.score, shape=(self.size, 1)))
 
-        # Now we don't have to bother with the sparse pytorch tensors!
-        # And no transpositions required too because we have control over the layout!
+        # 现在我们不必再使用稀疏的PyTorch张量！也不需要进行转置，因为我们对布局有控制！
         white_features_indices_t = torch.from_numpy(
             np.ctypeslib.as_array(self.white_features_indices, shape=(self.size, self.max_active_features)))
         black_features_indices_t = torch.from_numpy(
             np.ctypeslib.as_array(self.black_features_indices, shape=(self.size, self.max_active_features)))
 
-        # The values are all ones, so we can create these tensors in place easly.
-        # No need to go through a copy.
+        # 值全部为1，因此我们可以轻松地在原地创建这些张量。不需要进行复制。
         white_features_values_t = torch.ones(self.num_active_white_features)
         black_features_values_t = torch.ones(self.num_active_black_features)
 
-        # No more coalescing! Our implementation will be fast regardless of whether the inputs are sorted or not!
+        # 不再需要合并！无论输入是否排序，我们的实现都将快速执行！
         return white_features_indices_t, white_features_values_t, black_features_indices_t, black_features_values_t, stm_t, score_t
 
-# Let's also tell ctypes how to understand this type.
+# 让我们也告诉ctypes如何理解这种类型。
 SparseBatchPtr = ctypes.POINTER(SparseBatch)
 ```
 
@@ -2252,7 +2233,7 @@ SparseBatchPtr = ctypes.POINTER(SparseBatch)
 
 现在让我们尝试为特征转换器编写一个自定义 CUDA 内核。至此，您应该对特征转换器的工作原理以及如何在 C 中实现它有了很好的理解。这里我们将需要两个内核，一个用于前向传递，一个用于后向传递。我们将以使用值的通用方式编写这些内核，但对于某些用途，当然可以假设所有值都是 1（取决于特征集和分解方案）。最简单的方法是在评论中用注释来展示内核：
 
-```Cuda
+```c++
 typedef unsigned int uint32_t;
 typedef int int32_t;
 
@@ -2260,57 +2241,49 @@ extern "C" __global__
 
 /*
     @assumptions:
-        The blocks must have dimensionality (BATCH_SIZE,)
-        The threads must have dimensionality (N,), where
-        N * output_thread_slice_size == output_size.
+        块的维度必须为 (BATCH_SIZE,)
+        线程的维度必须为 (N,)，其中 N * output_thread_slice_size == output_size。
 
     @param: feature_indices
-        A matrix of shape (BATCH_SIZE, max_active_features)
-        containing indices of active features for each position
-        in a batch. Feature index of -1 means that the slot is empty
-        and the weights will not be accumulated for it. Moreover
-        no further indices from this block will be considered.
-        The indices form an implicit matrix of shape
-        (BATCH_SIZE, NUM_INPUTS), where the first dimension index is
-        inferred from the memory location (BATCH_SIZE), and the
-        second dimension index is stored in the feature_indices matrix.
-        The type for feature indices is int32_t.
+        形状为 (BATCH_SIZE, max_active_features) 的矩阵，
+        包含每个批次位置上活动特征的索引。
+        特征索引为 -1 表示该位置为空，权重不会累加。
+        此外，不会考虑此块中的其他索引。
+        索引构成了一个隐式矩阵，形状为 (BATCH_SIZE, NUM_INPUTS)，
+        其中第一维索引是从内存位置推断出的 (BATCH_SIZE)，
+        第二维索引存储在 feature_indices 矩阵中。
+        特征索引的类型为 int32_t。
 
     @param: feature_values
-        A matrix of shape (BATCH_SIZE, max_active_features)
-        containing the values (arity) of the corresponding
-        feature index in feature_indices.
-        The type for the feature value (arity) is float32.
+        形状为 (BATCH_SIZE, max_active_features) 的矩阵，
+        包含 feature_indices 对应索引的值（度）。
+        特征值（度）的类型为 float32。
 
     @param: weight
-        The weight matrix of shape (NUM_INPUTS, output_size).
-        Weights must be of type float32.
+        形状为 (NUM_INPUTS, output_size) 的权重矩阵。
+        权重必须为 float32 类型。
 
     @param: bias
-        The bias vector of shape (output_size,).
-        Bias values must be of type float32.
+        形状为 (output_size,) 的偏置向量。
+        偏置值必须为 float32 类型。
 
     @param: output
-        An output matrix of shape (BATCH_SIZE, output_size).
-        It may not be initialized, bias is always copied
-        to the output first.
-        Output values must have type float32.
+        形状为 (BATCH_SIZE, output_size) 的输出矩阵。
+        它可能未初始化，偏置总是首先复制到输出中。
+        输出值必须为 float32 类型。
 
     @const: max_active_features
-        The maximum number of features that are active
-        (non-zero) for a single position. This value determines
-        the shape of the inputs.
-        This value is of type uint32_t.
+        单个位置上活动（非零）的最大特征数。该值确定输入的形状。
+        此值的类型为 uint32_t。
 
     @const: output_size
-        The number of outputs. Must match the shape of weights
-        and biases.
-        This value is of type uint32.
+        输出的数量。必须与权重和偏置的形状相匹配。
+        此值的类型为 uint32_t。
 
     @const: output_thread_slice_size
-        The number of outputs to process per thread. Must be output_size/num_threads.
-        Equivalent to output_size/threadDim.x, but computing it at runtime is wasteful.
-        This value is of type uint32.
+        每个线程要处理的输出数。必须为 output_size/num_threads。
+        等效于 output_size/threadDim.x，但在运行时计算它是浪费的。
+        此值的类型为 uint32_t。
 */
 
 void feature_transformer_slice_forward(
@@ -2320,68 +2293,66 @@ void feature_transformer_slice_forward(
     const float*   const bias,
           float*   const output
 ) {
-    // The idea is to process one position per CUDA block, and in each block
-    // there will be N threads, each working on some slice of the output.
+    // 这个想法是每个 CUDA 块处理一个位置，每个块中有 N 个线程，
+    // 每个线程在输出的一些片段上工作。
 
-    // These values are constant to allow more optimization.
-    // Since with CuPy we have JIT compilation for free these
-    // values can be for example set by string interpolation
-    // whenever a specifically parameterized kernel is needed.
+    // 这些值是常量，以便进行更多的优化。
+    // 由于使用 CuPy，我们可以免费进行即时编译，
+    // 因此这些值可以通过字符串插值设置，以便在需要特定参数化的内核时使用。
     const uint32_t       max_active_features      = ...;
     const uint32_t       output_thread_slice_size = ...;
     const uint32_t       output_size              = ...;
-
-    // We get some memory that is shared between all threads.
-    // In theory we don't access it between threads, so this could
-    // be local, but arrays defined without __shared__ are
-    // placed in the global memory which might be slower, and
-    // we'd have to rely on the compiler to optimize it.
+    
+    // 我们获得一些在所有线程之间共享的内存。
+    // 理论上我们不在线程之间访问它，所以它可以是局部的，
+    // 但是未定义为 __shared__ 的数组
+    // 会放在全局内存中，可能会更慢，
+    // 而且我们必须依靠编译器对其进行优化。
     __shared__
           float          shared_output[output_size];
 
-    // 1 block is 1 position
+    // 1个块代表1个位置
     const uint32_t       block_idx           = blockIdx.x;
-    // Each thread processes only a small number of outputs for a position.
+    // 每个线程仅处理一个位置的一小部分输出。
     const uint32_t       slice_offset        = threadIdx.x * output_thread_slice_size;
 
-    // Each thread fills only a small number of outputs for a position.
-    // Here we calculate the offset into the output [batch_size, output_size] array
-    // where we need to put the results from this thread.
+    // 每个线程仅填充一个位置的一小部分输出。
+    // 在这里，我们计算了偏移量，将结果放入 [batch_size, output_size] 数组的输出中。
           float*   const output_slice        = output + block_idx * output_size + slice_offset;
-    // And other similar stuff.
+    // 其他类似的内容。
     const float*   const bias_slice          = bias                             + slice_offset;
           float*         shared_output_slice = shared_output                    + slice_offset;
 
-    // When we were using the pytorch's sparse matrices we needed to put 2 indices per value,
-    // they were the position index and the feature index. Now we're exploting
-    // our first assumption - we have a dense matrix of shape [batch_size, max_active_features],
-    // and we only store one index per feature, the position index is known.
+    // 当我们使用 PyTorch 的稀疏矩阵时，我们需要为每个值放置两个索引，
+    // 它们是位置索引和特征索引。现在我们利用了我们的第一个假设 -
+    // 我们有一个形状为 [batch_size, max_active_features] 的密集矩阵，
+    // 我们只存储一个特征的索引，位置索引是已知的。
     const int32_t* const feature_index_row   = feature_indices + block_idx * max_active_features;
     const float*   const feature_value_row   = feature_values  + block_idx * max_active_features;
 
     #pragma unroll
-    // Copy bias to the "local" memory.
+    // 将偏置复制到 "局部" 内存。
     for (uint32_t s = 0; s < output_thread_slice_size; ++s)
     {
         shared_output_slice[s] = bias_slice[s];
     }
 
-    // Each thread goes through all active features.
+    // 每个线程遍历所有活动特征。
     for (uint32_t k = 0; k < max_active_features; ++k)
     {
         const int32_t feature_index = feature_index_row[k];
         const float   feature_value = feature_value_row[k];
-        // We made it so that a feature index of -1 stops execution.
-        // This condition is the same for all threads, so we can break early
-        // and get some additional performance.
+        // 我们使得特征索引为 -1 时停止执行。
+        // 此条件对所有线程都相同，所以我们可以提前中断
+        // 并获得一些额外的性能。
         if (feature_index != -1)
         {
-            // Compute which weights we need to accumulate.
+            // 计算我们需要累加的权重。
             const float* const weight_slice = weight + feature_index * output_size + slice_offset;
             #pragma unroll
             for (uint32_t s = 0; s < output_thread_slice_size; ++s)
             {
-                // And accumulate the weights to the "local" memory.
+                // 累加权重到 "局部" 内存中。
                 shared_output_slice[s] += weight_slice[s] * feature_value;
             }
         } else break;
@@ -2390,7 +2361,7 @@ void feature_transformer_slice_forward(
     #pragma unroll
     for (uint32_t s = 0; s < output_thread_slice_size; ++s)
     {
-        // Only at the end we put the results back into global memory.
+        // 仅在最后将结果放回全局内存中。
         output_slice[s] = shared_output_slice[s];
     }
 }
@@ -2398,32 +2369,30 @@ void feature_transformer_slice_forward(
 
 #### 特征转换器后向内核
 
-```Cuda
+```c++
 typedef unsigned int uint32_t;
 typedef int int32_t;
 
 extern "C" __global__
 /*
-    @assumptions:
-        The blocks must have dimensionality (BATCH_SIZE,)
-        The threads must have dimensionality (N,), where
+    假设:
+        块必须具有维度 (BATCH_SIZE,)
+        线程必须具有维度 (N,), 其中
         N * output_thread_slice_size == output_size.
 
-    @param: weight_grad
-        The weight gradient matrix of shape (NUM_INPUTS, output_size).
-        The gradient is accumulated, i.e. it must be zero initialized
-        on the first call.
-        Weights must be of type float32.
+    参数: weight_grad
+        形状为 (NUM_INPUTS, output_size) 的权重梯度矩阵。
+        梯度是累积的，即在第一次调用时必须进行零初始化。
+        权重必须为 float32 类型。
 
-    @param: bias_grad
-        The bias gradient vector of shape (output_size,).
-        The gradient is accumulated, i.e. it must be zero initialized
-        on the first call.
-        Bias values must be of type float32.
+    参数: bias_grad
+        形状为 (output_size,) 的偏置梯度向量。
+        梯度是累积的，即在第一次调用时必须进行零初始化。
+        偏置值必须为 float32 类型。
 
-    @param: output_grad
-        An output gradient matrix of shape (BATCH_SIZE, output_size).
-        Output values must have type float32.
+    参数: output_grad
+        形状为 (BATCH_SIZE, output_size) 的输出梯度矩阵。
+        输出值必须为 float32 类型。
 */
 void feature_transformer_slice_backward(
     const int32_t* const feature_indices,
@@ -2431,16 +2400,14 @@ void feature_transformer_slice_backward(
           float*   const weight_grad,
           float*   const bias_grad,
     const float*   const output_grad
-) {{
-    // The helper indices and pointers we compute are very similar
-    // to the forward pass, we're just going to be doing it backwards.
+) {
+    // 计算辅助索引和指针非常类似于前向传递，只是我们要逆向进行操作。
     const uint32_t       max_active_features      = ...;
     const uint32_t       output_thread_slice_size = ...;
     const uint32_t       output_size              = ...;
 
-    // We don't really need to store this in the shared memory, because
-    // it's almost surely cached, but since it's free and we do
-    // use it many times in this kernel we might as well do it.
+    // 我们不真正需要将此存储在共享内存中，因为它几乎肯定会被缓存，
+    // 但既然它是免费的，并且我们在这个内核中多次使用它，我们不妨这样做。
     __shared__
           float          shared_output_grad[output_size];
 
@@ -2455,40 +2422,35 @@ void feature_transformer_slice_backward(
     const float*   const feature_value_row        = feature_values  + block_idx * max_active_features;
 
     #pragma unroll
-    for (uint32_t s = 0; s < output_thread_slice_size; ++s)
-    {
-        // Copy the values to "local" memory to hopefully speed up the repeated access.
+    for (uint32_t s = 0; s < output_thread_slice_size; ++s) {
+        // 将值复制到 "局部" 内存中，以希望加速重复访问。
         shared_output_grad_slice[s] = output_grad_slice[s];
     }
 
     #pragma unroll
-    for (uint32_t s = 0; s < output_thread_slice_size; ++s)
-    {
-        // x*w+b=y, so the bias gradient is just increased by the output gradient.
+    for (uint32_t s = 0; s < output_thread_slice_size; ++s) {
+        // x*w+b=y，因此偏置梯度仅增加输出梯度。
         const float sog = shared_output_grad_slice[s];
-        // We expect this layer to come before a ClippedReLU so there will be a lot of zeros.
-        // Also our kernel is completely memory bound, so we can utilize this to remove
-        // redundant additions.
+        // 我们预期这一层在ClippedReLU之前，所以会有很多零值。
+        // 同时，我们的内核完全受内存限制，因此可以利用这一点来消除冗余的加法运算。
         if (sog != 0.0f)
         {
-            // Due to how Nvidia GPUs work, since Kepler architecture, atomic
-            // additions execute in specialized units that are closer to global memory.
-            // Our access is mostly random, so be benefit here two-fold:
-            // 1. atomicAdd executes **faster** than += because it's closer to memory
-            // 2. we "rarely" have two atomic accesses to the same memory location.
-            // We have to use atomic additions either way, because we're modifying
-            // one gradient matrix (instead of multiple outputs as in the forward case),
-            // so this is fortunate for us.
+            // 由于Nvidia GPU的工作方式，自Kepler架构以来，原子加法在专用单元中执行，这些单元更接近全局内存。
+            // 我们的访问方式主要是随机的，因此在以下两个方面受益：
+            // 1. 原子加法比+=执行得更快，因为它更接近内存
+            // 2. 我们“很少”对同一内存位置进行两次原子访问。
+            // 无论如何都必须使用原子加法，因为我们只修改一个梯度矩阵（而不是前向情况下的多个输出），
+            // 所以对我们来说是幸运的。
             atomicAdd(&bias_grad_slice[s], sog);
         }
     }
 
-    // Same loop as in forward, but we accumulate the gradients now.
+    // 与前向循环相同，但现在我们累积梯度。
     for (uint32_t k = 0; k < max_active_features; ++k)
     {
         const int32_t feature_index = feature_index_row[k];
         const float   feature_value = feature_value_row[k];
-        // Exit early after all active indices are processed.
+        // 在处理完所有活跃索引后，提前退出。
         if (feature_index != -1)
         {
             float* const weight_grad_slice = weight_grad + feature_index * output_size + slice_offset;
@@ -2496,10 +2458,10 @@ void feature_transformer_slice_backward(
             for (int s = 0; s < output_thread_slice_size; ++s)
             {
                 const float sog = shared_output_grad_slice[s];
-                // Same optimization as in the case of the bias.
+                // 与偏置的情况下相同的优化。
                 if (sog != 0.0f)
                 {
-                    // x*w+b=y, so we accumulate output gradient multiplied by x (input).
+                    // x*w+b=y，因此我们累积乘以x（输入）的输出梯度。
                     atomicAdd(&weight_grad_slice[s], sog * feature_value);
                 }
             }
@@ -2514,54 +2476,52 @@ void feature_transformer_slice_backward(
 
 ```python
 class FeatureTransformerSliceFunction(autograd.Function):
-
     @staticmethod
     def forward(ctx, feature_indices, feature_values, weight, bias):
-        # Save the required stuff for the backward pass.
+        # 保存反向传播所需的信息
         ctx.save_for_backward(feature_indices, feature_values, weight, bias)
-
-        # A lot of assertions are needed to ensure the correctness.
+        
+        # 需要进行多个断言来确保正确性
         assert len(feature_indices.shape) == 2
         assert len(feature_values.shape) == 2
         assert feature_indices.shape[0] == feature_values.shape[0]
         assert feature_indices.shape[1] == feature_values.shape[1]
         assert feature_indices.dtype == torch.int32
         assert feature_values.dtype == torch.float32
-
+        
         assert len(weight.shape) == 2
         assert weight.dtype == torch.float32
-
+        
         assert len(bias.shape) == 1
         assert bias.dtype == torch.float32
-
+        
         assert feature_indices.is_cuda
         assert feature_values.is_cuda
         assert weight.is_cuda
         assert bias.is_cuda
-
+        
         assert feature_values.device == feature_indices.device
         assert weight.device == feature_indices.device
         assert bias.device == feature_indices.device
-
+        
         assert feature_indices.is_contiguous()
         assert feature_values.is_contiguous()
         assert weight.is_contiguous()
         assert bias.is_contiguous()
-
+        
         device = feature_indices.device
         batch_size = feature_indices.shape[0]
         max_active_features = feature_indices.shape[1]
         output_size = weight.shape[1]
-
+        
         output = torch.empty(batch_size, output_size, dtype=torch.float32, device=device, requires_grad=True)
-
-        # Implementation for make_feature_transformer_slice_forward_kernel not provided. It could
-        # for example dynamically create and cache the kernels.
+        
+        # make_feature_transformer_slice_forward_kernel的实现未提供。例如，它可以动态创建和缓存内核。
         kernel, num_threads = make_feature_transformer_slice_forward_kernel(max_active_features, output_size)
         kernel(
-            grid=(batch_size,), # One position per batch
-            block=(num_threads,), # Number of threads per block as "advised" by the function above
-            args=( # Pointers to all the tensors, we ensured they are contiguous.
+            grid=(batch_size,),  # 每个批次一个位置
+            block=(num_threads,),  # 每个块的线程数，根据上述函数的"建议"
+            args=(  # 所有张量的指针，我们确保它们是连续的。
                 feature_indices.data_ptr(),
                 feature_values.data_ptr(),
                 weight.data_ptr(),
@@ -2569,30 +2529,29 @@ class FeatureTransformerSliceFunction(autograd.Function):
                 output.data_ptr()
             )
         )
-
+        
         return output
-
+    
     @staticmethod
     def backward(ctx, grad_output):
-        # We don't handle the gradient for the feature indices and values, so
-        # make sure it's not required.
+        # 不处理特征索引和值的梯度，因此确保不需要它。
         assert not ctx.needs_input_grad[0]
         assert not ctx.needs_input_grad[1]
-
+        
         grad_output = grad_output.contiguous()
-
-        # Retrieve the saved tensors.
+        
+        # 恢复保存的张量。
         feature_indices, feature_values, weight, bias = ctx.saved_tensors
-
+        
         device = feature_indices.device
         batch_size = feature_indices.shape[0]
         max_active_features = feature_indices.shape[1]
         output_size = weight.shape[1]
-
+        
         weight_grad = torch.zeros(weight.shape[0], weight.shape[1], dtype=torch.float32, device=device)
         bias_grad = torch.zeros(output_size, dtype=torch.float32, device=device)
 
-        # Similar to the forward case
+        # 类似于前向传播的情况
         kernel, num_threads = make_feature_transformer_slice_backward_kernel(max_active_features, output_size)
         kernel(
             grid=(batch_size,),
@@ -2606,7 +2565,7 @@ class FeatureTransformerSliceFunction(autograd.Function):
             )
         )
 
-        # The order of returned values here is the same as the order of inputs to the forward pass.
+        # 返回的值的顺序与前向传播的输入顺序相同。
         return None, None, weight_grad, bias_grad
 
 class FeatureTransformerSlice(nn.Module):
@@ -2615,14 +2574,14 @@ class FeatureTransformerSlice(nn.Module):
         self.num_inputs = num_inputs
         self.num_outputs = num_outputs
 
-        # Initialize in the same way nn.Linear would be initialized.
+        # 以与 nn.Linear 相同的方式初始化
         sigma = math.sqrt(1/num_inputs)
         self.weight = nn.Parameter(torch.rand(num_inputs, num_outputs, dtype=torch.float32) * (2 * sigma) - sigma)
         self.bias = nn.Parameter(torch.rand(num_outputs, dtype=torch.float32) * (2 * sigma) - sigma)
 
     def forward(self, feature_indices, feature_values):
-        # Use our FeatureTransformerSliceFunction for the forward pass.
-        # Backward will automatically use the backward function from the FeatureTransformerSliceFunction class
+        # 在前向传播中使用FeatureTransformerSliceFunction
+        # 反向传播将自动使用FeatureTransformerSliceFunction类中的backward函数
         return FeatureTransformerSliceFunction.apply(feature_indices, feature_values, self.weight, self.bias)
 ```
 
@@ -2646,7 +2605,7 @@ HalfKA 功能集在本文档中作为 HalfKP 的兄弟被简要提及。它最�
 
 ### 特征转换器的一部分直接转发到输出。
 
-通常情况下，网络很难学习到高物质不平衡，甚至根本无法代表高评价。但我们可以帮助它。我们已经为棋盘上的每个棋子积累了大约 256 个值，这是否敲响了警钟？如果我们再添加一个并将其指定为“PSQT”呢？这就是我们要做的。我们将简单地使特征转换器权重行具有 257 个值，并将最后一个用作“PSQT”。我们可以在训练期间通过将其初始化为类似于良好 PSQT 值的值来帮助它（但请记住根据量化对其进行缩放！）。但是我们有两种观点？那个怎么样？是的，我们这样做了，但是我们可以对它们进行平均，比如`(our - their) / 2`（记住它们必须被否定）。在培训师中处理它非常容易。
+通常情况下，网络很难学习到高物质不平衡，甚至根本无法代表高评价。但我们可以帮助它。我们已经为棋盘上的每个棋子积累了大约 256 个值，这是否敲响了警钟？如果我们再添加一个并将其指定为“PSQT”呢？这就是我们要做的。我们将简单地使特征转换器权重行具有 257 个值，并将最后一个用作“PSQT”。我们可以在训练期间通过将其初始化为类似于良好 PSQT 值的值来帮助它（但请记住根据量化对其进行缩放！）。但是我们有两种观点？那个怎么样？是的，我们这样做了，但是我们可以对它们进行平均，比如`(our - their) / 2`（记住它们必须被否定）。在训练器中处理它非常容易。
 
 ```python
 wp = self.ft(w_in)
@@ -2670,7 +2629,7 @@ y = self.output(l2_) + (wpsqt - bpsqt) * (us - 0.5)
 但是如何在训练器中实施呢？“选择东西”对 GPU 不是很友好，我们也在做批处理，对吧？确实不是，但幸运的是层非常小，所以我们可以只评估所有层并只选择结果！此外，多个`N`线性层只能由一个输出数倍的线性层来模拟`N`。让我们看看它是如何在 PyTorch 中实现的：
 
 ```python
-# Numbers of hidden neurons
+# 隐藏神经元的数量
 L1 = 256
 L2 = 32
 L3 = 32
@@ -2680,46 +2639,45 @@ class LayerStacks(nn.Module):
         super(LayerStacks, self).__init__()
 
         self.count = count
-        # Layers are larger, very good for GPUs
+        # 层较大，非常适合GPU
         self.l1 = nn.Linear(2 * L1, L2 * count)
         self.l2 = nn.Linear(L2, L3 * count)
         self.output = nn.Linear(L3, 1 * count)
 
-        # For caching some magic later.
+        # 用于缓存一些后续的魔法操作
         self.idx_offset = None
 
-        # Don't forget to initialize the layers to your liking.
-        # It might be worth it to initialize the layers in each layer
-        # stack identically, or introduce a factorizer for the first
-        # layer in the layer stacks.
+        # 不要忘记按照您的喜好初始化层。
+        # 每个层堆栈中的层可能都值得相同地初始化，或者在层堆栈的第一层引入一个因子分解器。
 
     def forward(self, x, layer_stack_indices):
-        # Precompute and cache the offset for gathers
+        # 预计算并缓存gather操作的偏移量
         if self.idx_offset == None or self.idx_offset.shape[0] != x.shape[0]:
-            # This is the "magic". There's no easy way to gather just one thing out of
-            # many for each position in the batch, but we can interpret the whole batch as
-            # N * batch_size outputs and modify the layer_stack_indices to point to
-            # `N * i + layer_stack_indices`, where `i` is the position index.
-            # Here we precompute the additive part. This part includes just the values `N * i`
+            # 这就是"魔法"。在批次中的每个位置没有简单的方法从许多中选择一个，
+            # 但我们可以将整个批次解释为
+            # N * batch_size个输出，并修改layer_stack_indices
+            # 指向`N * i + layer_stack_indices`，
+            # 其中`i`是位置索引。
+            # 这里我们预先计算加法部分。这部分仅包括值`N * i`
             self.idx_offset = torch.arange(0, x.shape[0] * self.count, self.count, device=layer_stack_indices.device)
 
-        # And here we add the current indices to the additive part.
+        # 在这里我们将当前索引添加到加法部分。
         indices = layer_stack_indices.flatten() + self.idx_offset
 
-        # Evaluate the whole layer
+        # 计算整个层
         l1s_ = self.l1(x)
-        # View the output as a `N * batch_size` chunks
-        # Choose `batch_size` chunks based on the indices we computed before.
+        # 将输出视为`N * batch_size`个块
+        # 根据我们之前计算的索引选择`batch_size`个块。
         l1c_ = l1s_.view(-1, L2)[indices]
-        # We could have applied ClippedReLU earlier, doesn't matter.
+        # 我们本可以在前面应用ClippedReLU，这并不重要。
         l1y_ = torch.clamp(l1c_, 0.0, 1.0)
 
-        # Same for the second layer.
+        # 对于第二层也是如此
         l2s_ = self.l2(l1y_)
         l2c_ = l2s_.view(-1, L3)[indices]
         l2y_ = torch.clamp(l2c_, 0.0, 1.0)
 
-        # Same for the third layer, but no clamping since it's the output.
+        # 第三层同样适用，但不进行夹取操作，因为它是输出层。
         l3s_ = self.output(l2y_)
         l3y_ = l3s_.view(-1, 1)[indices]
 
